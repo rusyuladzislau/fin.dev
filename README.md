@@ -192,6 +192,20 @@ After the first deployment, verify `/`, `/dashboard`, `/settings`, and these gen
 /wasm/market_generator_bg.wasm
 ```
 
+## Vercel deployment
+
+`vercel.json` configures the Vercel build, Node.js 24 through `package.json`, the Angular output directory, and the SPA fallback for direct route navigation. Vercel runs `scripts/build-with-wasm.sh`, which installs the Rust/Wasm toolchain when necessary and creates the production build.
+
+Import the GitHub repository into Vercel, or use the CLI from the repository root:
+
+```bash
+npx vercel login
+npx vercel link
+npx vercel --prod
+```
+
+Subsequent pushes to the connected production branch can trigger automatic deployments through Vercel's Git integration.
+
 ## Trade-offs and limitations
 
 - The generator is deterministic and seedable for reproducible tests; it is not a real market-data feed or a market microstructure model.
