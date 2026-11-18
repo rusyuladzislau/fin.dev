@@ -1,0 +1,25 @@
+<div class="flex items-baseline justify-between gap-4">
+  <label [for]="fieldId()" class="text-sm font-medium text-slate-200">{{ label() }}</label>
+  <span class="font-mono text-[11px] text-slate-500">{{ rangeLabel() }}</span>
+</div>
+<input
+  #numberInput
+  [id]="fieldId()"
+  type="number"
+  inputmode="numeric"
+  step="1"
+  [min]="min()"
+  [max]="max()"
+  [formControl]="control()"
+  [attr.aria-describedby]="hintId() + ' ' + errorId()"
+  [attr.aria-invalid]="showError()"
+  class="mt-2 min-h-11 w-full rounded-lg border bg-ink-950 px-3 font-mono text-sm text-slate-100 transition-colors placeholder:text-slate-600 hover:border-slate-600"
+  [class.border-rose-400]="showError()"
+  [class.border-ink-800]="!showError()"
+/>
+<p [id]="hintId()" class="mt-2 text-xs text-slate-500">{{ hint() }}</p>
+@if (showError()) {
+  <p [id]="errorId()" class="mt-2 text-xs font-medium text-rose-400" role="alert">
+    {{ errorMessage() }}
+  </p>
+}

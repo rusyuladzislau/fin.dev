@@ -1,0 +1,103 @@
+<div class="mt-6 overflow-hidden rounded-xl border border-ink-800 bg-ink-900">
+  <div
+    class="flex flex-col gap-1 border-b border-ink-800 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5"
+  >
+    <h2 class="font-medium text-slate-100">Instrument performance</h2>
+    <p class="font-mono text-[11px] text-slate-500">
+      Cumulative volume and VWAP · no rolling windows
+    </p>
+  </div>
+
+  <div class="overflow-x-auto">
+    <table class="w-full border-collapse text-left" aria-label="Live financial instrument metrics">
+      <thead>
+        <tr
+          class="border-b border-ink-800 bg-ink-950/45 font-mono text-[11px] uppercase tracking-wider text-slate-500"
+        >
+          <th scope="col" class="px-4 py-3 font-medium sm:px-5">Instrument</th>
+          <th scope="col" class="px-4 py-3 text-right font-medium">Last price</th>
+          <th scope="col" class="px-4 py-3 text-right font-medium">Spread</th>
+          <th scope="col" class="px-4 py-3 text-right font-medium">Volume</th>
+          <th scope="col" class="px-4 py-3 text-right font-medium">VWAP</th>
+          <th scope="col" class="px-4 py-3 text-right font-medium sm:px-5">Imbalance</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (item of instruments(); track item.instrument) {
+          <tr
+            class="border-b border-ink-800/70 text-sm transition-colors last:border-b-0 hover:bg-ink-850/55"
+          >
+            <th scope="row" class="whitespace-nowrap px-4 py-4 sm:px-5">
+              <span class="font-mono font-medium tracking-wide text-slate-100">{{
+                item.instrument
+              }}</span>
+            </th>
+            <td
+              class="whitespace-nowrap px-4 py-4 text-right font-mono tabular-nums text-slate-100"
+            >
+              @if (item.lastPriceCents === null) {
+                <span class="text-slate-600">—</span>
+              } @else {
+                {{ item.lastPriceCents / 100 | currency: 'USD' : 'symbol' : '1.2-2' }}
+              }
+            </td>
+            <td
+              class="whitespace-nowrap px-4 py-4 text-right font-mono tabular-nums text-slate-300"
+            >
+              @if (item.spreadCents === null) {
+                <span class="text-slate-600">—</span>
+              } @else {
+                {{ item.spreadCents / 100 | currency: 'USD' : 'symbol' : '1.2-2' }}
+              }
+            </td>
+            <td
+              class="whitespace-nowrap px-4 py-4 text-right font-mono tabular-nums text-slate-300"
+            >
+              {{ item.volume | number: '1.0-0' }}
+            </td>
+            <td
+              class="whitespace-nowrap px-4 py-4 text-right font-mono tabular-nums text-slate-300"
+            >
+              @if (item.vwapCents === null) {
+                <span class="text-slate-600">—</span>
+              } @else {
+                {{ item.vwapCents / 100 | currency: 'USD' : 'symbol' : '1.2-2' }}
+              }
+            </td>
+            <td class="whitespace-nowrap px-4 py-4 text-right font-mono tabular-nums sm:px-5">
+              @if (item.imbalance === null) {
+                <span class="text-slate-600">—</span>
+              } @else {
+                <span
+                  [class.text-mint-400]="item.imbalance >= 0"
+                  [class.text-rose-400]="item.imbalance < 0"
+                >
+                  {{ item.imbalance | number: '1.2-2' }}
+                </span>
+              }
+            </td>
+          </tr>
+        } @empty {
+          <tr>
+            <td colspan="6" class="px-5 py-16 text-center">
+              <span
+                class="mx-auto block size-2 animate-pulse rounded-full bg-mint-400"
+                aria-hidden="true"
+              ></span>
+              <p class="mt-4 text-sm font-medium text-slate-300">
+                {{ hasError() ? 'No producer data available' : 'Initializing Wasm producer' }}
+              </p>
+              <p class="mt-1 text-xs text-slate-500">
+                {{
+                  hasError()
+                    ? 'Retry or apply the settings again.'
+                    : 'Preparing instruments and worker resources…'
+                }}
+              </p>
+            </td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+</div>

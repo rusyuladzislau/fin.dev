@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.15.1 --locked
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Lint Angular, templates, and FSD boundaries
+        run: npm run lint
+
+      - name: Run Angular and TypeScript tests
+        run: npm test
+
+      - name: Run Rust tests
+        run: npm run test:wasm
+
+      - name: Check strict TypeScript
+        run: npx tsc --noEmit -p tsconfig.app.json
+
+      - name: Build Wasm and Angular for production
+        run: npm run build

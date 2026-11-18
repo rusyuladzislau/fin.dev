@@ -1,0 +1,51 @@
+{
+  "name": "fin-dev-tech-task",
+  "version": "1.0.0",
+  "scripts": {
+    "ng": "ng",
+    "dev": "ng serve",
+    "start": "ng serve",
+    "build": "npm run build:wasm && ng build",
+    "build:angular": "ng build",
+    "build:wasm": "wasm-pack build crates/market-generator --target web --out-dir ../../public/wasm --out-name market_generator",
+    "watch": "ng build --watch --configuration development",
+    "test": "ng test --watch=false",
+    "test:watch": "ng test",
+    "test:wasm": "cargo test --manifest-path crates/market-generator/Cargo.toml",
+    "test:all": "npm run test && npm run test:wasm",
+    "lint": "ng lint",
+    "lint:fix": "ng lint --fix"
+  },
+  "private": true,
+  "packageManager": "npm@11.12.1",
+  "dependencies": {
+    "@angular/common": "^21.2.0",
+    "@angular/compiler": "^21.2.0",
+    "@angular/core": "^21.2.0",
+    "@angular/forms": "^21.2.0",
+    "@angular/platform-browser": "^21.2.0",
+    "@angular/router": "^21.2.0",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@fontsource/ibm-plex-sans": "^5.3.0",
+    "@tailwindcss/postcss": "^4.3.5",
+    "postcss": "^8.5.33",
+    "rxjs": "~7.8.0",
+    "tailwindcss": "^4.3.5",
+    "tslib": "^2.3.0"
+  },
+  "devDependencies": {
+    "@angular/build": "^21.2.30",
+    "@angular/cli": "^21.2.30",
+    "@angular/compiler-cli": "^21.2.0",
+    "@eslint/js": "^10.0.1",
+    "angular-eslint": "21.4.0",
+    "eslint": "^10.3.0",
+    "eslint-import-resolver-typescript": "^4.4.5",
+    "eslint-plugin-boundaries": "^7.4.4",
+    "jsdom": "^28.0.0",
+    "prettier": "^3.8.1",
+    "typescript": "~5.9.2",
+    "typescript-eslint": "8.59.2",
+    "vitest": "^4.0.8"
+  }
+}

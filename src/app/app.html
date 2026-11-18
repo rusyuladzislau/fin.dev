@@ -1,0 +1,68 @@
+<div class="min-h-dvh bg-ink-950">
+  <header class="sticky top-0 z-20 border-b border-ink-800 bg-ink-950/95 backdrop-blur">
+    <div
+      class="mx-auto flex min-h-20 max-w-[1440px] items-center justify-between gap-4 px-4 sm:px-6 lg:px-8"
+    >
+      <div class="flex min-w-0 items-center gap-6 lg:gap-10">
+        <a
+          routerLink="/dashboard"
+          class="flex min-h-11 shrink-0 cursor-pointer items-center gap-3 rounded-md transition-opacity hover:opacity-85"
+          aria-label="fin.dev tech task dashboard home"
+        >
+          <span class="grid size-9 place-items-center rounded-lg bg-mint-400 text-ink-950">
+            <app-svg-icon name="activity" [size]="21" [strokeWidth]="2.2" />
+          </span>
+          <span>
+            <span class="block text-lg font-semibold leading-none tracking-tight text-slate-50">
+              fin.dev tech task
+            </span>
+            <span
+              class="mt-1 hidden font-mono text-[10px] uppercase leading-none tracking-[0.18em] text-slate-400 sm:block"
+            >
+              Market simulator
+            </span>
+          </span>
+        </a>
+
+        <nav class="flex items-center gap-1" aria-label="Primary navigation">
+          <a
+            routerLink="/dashboard"
+            routerLinkActive="bg-ink-800 text-slate-50"
+            class="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-3 text-sm font-medium text-slate-400 transition-colors hover:bg-ink-900 hover:text-slate-100 sm:px-4"
+          >
+            <app-svg-icon name="dashboard" [size]="17" />
+            <span class="hidden sm:inline">Dashboard</span>
+          </a>
+          <a
+            routerLink="/settings"
+            routerLinkActive="bg-ink-800 text-slate-50"
+            class="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-3 text-sm font-medium text-slate-400 transition-colors hover:bg-ink-900 hover:text-slate-100 sm:px-4"
+          >
+            <app-svg-icon name="settings" [size]="17" />
+            <span class="hidden sm:inline">Settings</span>
+          </a>
+        </nav>
+      </div>
+
+      <div class="hidden md:block">
+        <app-status-badge
+          [label]="status()"
+          [tone]="statusTone()"
+          [pulse]="status() === 'initializing'"
+        />
+      </div>
+    </div>
+  </header>
+
+  <main class="mx-auto min-h-[calc(100dvh-9rem)] max-w-[1440px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+    <router-outlet />
+  </main>
+
+  <footer class="border-t border-ink-800">
+    <div
+      class="mx-auto flex max-w-[1440px] flex-col gap-1 px-4 py-5 font-mono text-[11px] text-slate-500 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8"
+    >
+      <span>Simulated data. Cumulative per run.</span>
+    </div>
+  </footer>
+</div>

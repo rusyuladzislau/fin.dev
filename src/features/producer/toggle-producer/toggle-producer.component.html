@@ -1,0 +1,16 @@
+@if (producer.status() === 'error') {
+  <app-button (click)="retry()">
+    <app-svg-icon name="reset" [size]="17" />
+    Retry producer
+  </app-button>
+} @else {
+  <app-button (click)="toggleProducer()" [disabled]="producer.status() === 'initializing'">
+    @if (producer.status() === 'paused') {
+      <app-svg-icon name="play" [size]="17" />
+      Resume generation
+    } @else {
+      <app-svg-icon name="pause" [size]="17" />
+      Pause generation
+    }
+  </app-button>
+}

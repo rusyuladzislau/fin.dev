@@ -1,0 +1,61 @@
+<form
+  [formGroup]="form"
+  (ngSubmit)="apply()"
+  novalidate
+  class="rounded-xl border border-ink-800 bg-ink-900 p-5 sm:p-6"
+>
+  <div class="border-b border-ink-800 pb-5">
+    <h2 class="font-medium text-slate-100">Next run</h2>
+    <p class="mt-1 text-sm text-slate-500">
+      All values must be whole numbers within the allowed ranges.
+    </p>
+  </div>
+
+  <div class="mt-6 space-y-6">
+    <app-number-field
+      fieldId="instrumentCount"
+      label="Instrument count"
+      hint="Fictional instruments created for the next run."
+      [control]="form.controls.instrumentCount"
+      [min]="limits.instrumentCount.min"
+      [max]="limits.instrumentCount.max"
+    />
+
+    <app-number-field
+      fieldId="updatesPerBatch"
+      label="Updates per batch"
+      hint="Total updates across all instruments, not per instrument."
+      [control]="form.controls.updatesPerBatch"
+      [min]="limits.updatesPerBatch.min"
+      [max]="limits.updatesPerBatch.max"
+    />
+
+    <app-number-field
+      fieldId="batchIntervalMs"
+      label="Batch interval"
+      hint="Requested delay between generated batches in milliseconds."
+      unit="ms"
+      [control]="form.controls.batchIntervalMs"
+      [min]="limits.batchIntervalMs.min"
+      [max]="limits.batchIntervalMs.max"
+    />
+  </div>
+
+  <div class="mt-6 flex items-start gap-3 rounded-lg bg-ink-950 p-4 text-sm text-slate-400">
+    <app-svg-icon name="info" class="mt-0.5 text-mint-400" [size]="18" />
+    <p>
+      Applying settings stops the current producer, clears all prices and totals, and starts a new
+      running generation cycle.
+    </p>
+  </div>
+
+  <div
+    class="mt-6 flex flex-col-reverse gap-3 border-t border-ink-800 pt-5 sm:flex-row sm:items-center sm:justify-between"
+  >
+    <app-button variant="secondary" (click)="resetDraft()">
+      <app-svg-icon name="reset" [size]="16" />
+      Reset draft
+    </app-button>
+    <app-button type="submit" [disabled]="form.invalid"> Apply and start new run </app-button>
+  </div>
+</form>

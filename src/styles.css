@@ -1,0 +1,74 @@
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-sans/700.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+@import '@fontsource/ibm-plex-mono/600.css';
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'IBM Plex Sans', sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+  --color-ink-950: oklch(0.16 0.025 235);
+  --color-ink-900: oklch(0.205 0.028 235);
+  --color-ink-850: oklch(0.24 0.03 235);
+  --color-ink-800: oklch(0.28 0.032 235);
+  --color-mint-400: oklch(0.82 0.17 165);
+  --color-mint-500: oklch(0.72 0.17 165);
+  --color-amber-400: oklch(0.82 0.15 80);
+  --color-rose-400: oklch(0.7 0.18 20);
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    color-scheme: dark;
+    background: var(--color-ink-950);
+  }
+
+  body {
+    margin: 0;
+    min-width: 320px;
+    min-height: 100dvh;
+    background: var(--color-ink-950);
+    color: oklch(0.93 0.015 220);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  button,
+  input {
+    font: inherit;
+  }
+
+  button,
+  a {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-mint-400);
+    outline-offset: 3px;
+  }
+
+  ::selection {
+    background: oklch(0.72 0.17 165 / 0.28);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
