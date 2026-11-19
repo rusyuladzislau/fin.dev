@@ -51,6 +51,7 @@ describe('ProducerService', () => {
 
   afterEach(() => {
     TestBed.resetTestingModule();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -119,9 +120,104 @@ describe('ProducerService', () => {
     expect(MockWorker.instances).toHaveLength(1);
   });
 
-  it('surfaces producer errors', () => {
-    MockWorker.instances[0].emit({ type: 'error', runId: 1, message: 'Wasm unavailable' });
+  it('surfaces runtime errors without restarting accumulated metrics', () => {
+    vi.useFakeTimers();
+    const worker = MockWorker.instances[0];
+    worker.emit({ type: 'status', runId: 1, status: 'running' });
+    worker.emit({ type: 'snapshot', runId: 1, instruments: [metrics(40)] });
+    worker.emit({ type: 'error', runId: 1, message: 'Generation failed' });
+
+    vi.advanceTimersByTime(10_000);
     expect(service.status()).toBe('error');
-    expect(service.error()).toBe('Wasm unavailable');
+    expect(service.error()).toBe('Generation failed');
+    expect(service.instruments()).toEqual([metrics(40)]);
+    expect(MockWorker.instances).toHaveLength(1);
+  });
+
+  it('retries initialization with backoff and recovers within the same run', () => {
+    vi.useFakeTimers();
+    const firstWorker = MockWorker.instances[0];
+    firstWorker.emit({ type: 'error', runId: 1, message: 'Wasm unavailable' });
+
+    expect(firstWorker.terminated).toBe(true);
+    expect(service.status()).toBe('initializing');
+    expect(service.initializationAttempt()).toBe(2);
+    expect(MockWorker.instances).toHaveLength(1);
+
+    vi.advanceTimersByTime(499);
+    expect(MockWorker.instances).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(MockWorker.instances).toHaveLength(2);
+
+    MockWorker.instances[1].emit({ type: 'error', runId: 1, message: 'Wasm unavailable' });
+    vi.advanceTimersByTime(1_000);
+    expect(MockWorker.instances).toHaveLength(3);
+
+    MockWorker.instances[2].emit({ type: 'status', runId: 1, status: 'running' });
+    expect(service.status()).toBe('running');
+    expect(service.error()).toBeNull();
+    expect(service.runId()).toBe(1);
+    expect(service.initializationAttempt()).toBe(3);
+  });
+
+  it('stops after five initialization attempts and allows a manual retry', () => {
+    vi.useFakeTimers();
+    const delays = [500, 1_000, 2_000, 4_000];
+
+    for (let index = 0; index < 5; index += 1) {
+      MockWorker.instances[index].emit({
+        type: 'error',
+        runId: 1,
+        message: 'Wasm unavailable',
+      });
+      if (index < delays.length) {
+        vi.advanceTimersByTime(delays[index]);
+      }
+    }
+
+    expect(MockWorker.instances).toHaveLength(5);
+    expect(service.status()).toBe('error');
+    expect(service.error()).toBe(
+      'Producer initialization failed after 5 attempts: Wasm unavailable',
+    );
+    expect(service.initializationAttempt()).toBe(5);
+
+    vi.advanceTimersByTime(10_000);
+    expect(MockWorker.instances).toHaveLength(5);
+
+    service.applySettings({ ...service.activeSettings() });
+    expect(MockWorker.instances).toHaveLength(6);
+    expect(service.runId()).toBe(2);
+    expect(service.status()).toBe('initializing');
+    expect(service.initializationAttempt()).toBe(1);
+    expect(service.error()).toBeNull();
+  });
+
+  it('cancels a scheduled retry when settings are applied', () => {
+    vi.useFakeTimers();
+    MockWorker.instances[0].emit({ type: 'error', runId: 1, message: 'Wasm unavailable' });
+
+    service.applySettings({ instrumentCount: 10, updatesPerBatch: 200, batchIntervalMs: 100 });
+    vi.advanceTimersByTime(10_000);
+
+    expect(MockWorker.instances).toHaveLength(2);
+    expect(service.runId()).toBe(2);
+    expect(service.initializationAttempt()).toBe(1);
+    expect(MockWorker.instances[1].messages[0]).toMatchObject({
+      type: 'initialize',
+      runId: 2,
+      settings: { instrumentCount: 10, updatesPerBatch: 200, batchIntervalMs: 100 },
+    });
+  });
+
+  it('cancels a scheduled retry when disposed', () => {
+    vi.useFakeTimers();
+    MockWorker.instances[0].emit({ type: 'error', runId: 1, message: 'Wasm unavailable' });
+
+    service.dispose();
+    vi.advanceTimersByTime(10_000);
+
+    expect(MockWorker.instances).toHaveLength(1);
+    expect(MockWorker.instances[0].terminated).toBe(true);
   });
 });

@@ -79,11 +79,7 @@ async function initialize(command: Extract<WorkerCommand, { type: 'initialize' }
     }
   } catch (error) {
     if (isCurrentRun(command.runId)) {
-      // Visual feedback only: keep the initializing state visible before showing the error.
-      await new Promise<void>((resolve) => setTimeout(resolve, 500));
-      if (isCurrentRun(command.runId)) {
-        handleFailure(error);
-      }
+      handleFailure(error);
     }
   }
 }

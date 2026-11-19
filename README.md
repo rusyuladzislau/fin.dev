@@ -143,7 +143,19 @@ npm run test:all
 npx tsc --noEmit -p tsconfig.app.json
 ```
 
-The current suite contains 24 Angular/TypeScript tests and 7 Rust tests. Browser verification also covers Pause/Resume, Apply, navigation, validation, narrow layouts, and the maximum nominal mode of 50 instruments and 20,000 updates/second.
+The current suite contains 28 Angular/TypeScript tests and 7 Rust tests. Browser verification also covers Pause/Resume, Apply, navigation, validation, narrow layouts, and the maximum nominal mode of 50 instruments and 20,000 updates/second.
+
+### Manual retry verification
+
+1. Open Chrome DevTools → **Network** and enable **Disable cache**.
+2. Open **Network request blocking**, enable it, and add this URLPattern:
+
+   ```text
+   *://*:*/wasm/market_generator_bg.wasm
+   ```
+
+3. Reload the page with DevTools open. The dashboard should retry initialization five times, then show an error and **Retry producer**.
+4. Disable request blocking and click **Retry producer**. The application should recover without another reload.
 
 ## Production build
 
