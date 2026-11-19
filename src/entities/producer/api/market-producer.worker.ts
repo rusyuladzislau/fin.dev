@@ -1,8 +1,14 @@
 /// <reference lib="webworker" />
 
-import { MarketUpdate, MetricCalculator } from '../../instrument';
-import { ProducerSettings } from '../model/producer.models';
-import { WorkerCommand, WorkerEvent } from './worker-protocol';
+import { InstrumentMetrics, MarketUpdate, MetricCalculator } from '../../instrument';
+import { DEFAULT_PRODUCER_SETTINGS, ProducerSettings, ProducerStatus } from '../model/producer.models';
+import { isProducerSettings } from '../model/producer-settings';
+import {
+  MAX_INITIALIZATION_ATTEMPTS,
+  ProducerWorkerState,
+  WorkerCommand,
+  WorkerEvent,
+} from './worker-protocol';
 
 interface WasmGeneratorInstance {
   instrumentSymbols(): string[];
@@ -20,23 +26,56 @@ interface WasmModule {
   WasmMarketGenerator: WasmGeneratorConstructor;
 }
 
-const workerContext = self as unknown as DedicatedWorkerGlobalScope;
+const workerContext = self as unknown as SharedWorkerGlobalScope;
 const calculator = new MetricCalculator();
+const ports = new Set<MessagePort>();
 const snapshotIntervalMs = 100;
+const initializationRetryDelaysMs = [500, 1_000, 2_000, 4_000] as const;
 
 let activeRunId: number | null = null;
-let settings: ProducerSettings | null = null;
+let settingsState: ProducerSettings = { ...DEFAULT_PRODUCER_SETTINGS };
+let statusState: ProducerStatus = 'initializing';
+let instrumentsState: InstrumentMetrics[] = [];
+let errorState: string | null = null;
+let initializationAttempt = 1;
+let wasmBaseUrl: string | null = null;
 let generator: WasmGeneratorInstance | null = null;
 let scheduleHandle: ReturnType<typeof setTimeout> | null = null;
+let retryHandle: ReturnType<typeof setTimeout> | null = null;
 let desiredState: 'running' | 'paused' = 'running';
 let lastSnapshotAt = 0;
 let wasmModulePromise: Promise<WasmModule> | null = null;
 
-workerContext.onmessage = (event: MessageEvent<WorkerCommand>) => {
-  const command = event.data;
+workerContext.onconnect = (event: MessageEvent): void => {
+  const port = event.ports[0];
+  if (!port) return;
+
+  ports.add(port);
+  port.onmessage = (message: MessageEvent<WorkerCommand>): void => {
+    handleCommand(port, message.data);
+  };
+  port.start();
+};
+
+function handleCommand(port: MessagePort, command: WorkerCommand): void {
   switch (command.type) {
-    case 'initialize':
-      void initialize(command);
+    case 'attach':
+      if (activeRunId === null) {
+        startNewRun({ ...DEFAULT_PRODUCER_SETTINGS }, command.wasmBaseUrl);
+      } else {
+        postState(port);
+      }
+      break;
+    case 'detach':
+      ports.delete(port);
+      port.onmessage = null;
+      port.close();
+      if (ports.size === 0) resetProducer();
+      break;
+    case 'apply-settings':
+      if (isProducerSettings(command.settings) && wasmBaseUrl) {
+        startNewRun(command.settings, wasmBaseUrl);
+      }
       break;
     case 'pause':
       pause(command.runId);
@@ -44,42 +83,49 @@ workerContext.onmessage = (event: MessageEvent<WorkerCommand>) => {
     case 'resume':
       resume(command.runId);
       break;
-    case 'dispose':
-      if (isCurrentRun(command.runId)) {
-        cleanupProducer();
-        activeRunId = null;
-      }
-      break;
   }
-};
+}
 
-async function initialize(command: Extract<WorkerCommand, { type: 'initialize' }>): Promise<void> {
+function startNewRun(settings: ProducerSettings, baseUrl: string): void {
   cleanupProducer();
-  activeRunId = command.runId;
-  settings = { ...command.settings };
+  activeRunId = (activeRunId ?? 0) + 1;
+  settingsState = { ...settings };
+  wasmBaseUrl = baseUrl;
+  statusState = 'initializing';
+  instrumentsState = [];
+  errorState = null;
+  initializationAttempt = 1;
   desiredState = 'running';
   lastSnapshotAt = 0;
+  calculator.reset([]);
+  broadcastState();
+  void initialize(activeRunId);
+}
+
+async function initialize(runId: number): Promise<void> {
+  if (!wasmBaseUrl) return;
 
   try {
-    const module = await loadWasm(command.wasmBaseUrl);
-    if (!isCurrentRun(command.runId) || !settings) return;
+    const module = await loadWasm(wasmBaseUrl);
+    if (!isCurrentRun(runId)) return;
 
     const seed = crypto.getRandomValues(new Uint32Array(1))[0];
-    generator = new module.WasmMarketGenerator(settings.instrumentCount, seed);
+    generator = new module.WasmMarketGenerator(settingsState.instrumentCount, seed);
     const instruments = generator.instrumentSymbols();
     calculator.reset(instruments);
-    post({ type: 'ready', runId: command.runId, instruments });
     publishSnapshot(true);
 
     if (desiredState === 'running') {
-      postStatus('running');
+      statusState = 'running';
+      broadcastState();
       scheduleNext(0);
     } else {
-      postStatus('paused');
+      statusState = 'paused';
+      broadcastState();
     }
   } catch (error) {
-    if (isCurrentRun(command.runId)) {
-      handleFailure(error);
+    if (isCurrentRun(runId)) {
+      handleInitializationFailure(error);
     }
   }
 }
@@ -103,7 +149,8 @@ function pause(runId: number): void {
   clearSchedule();
   if (generator) {
     publishSnapshot(true);
-    postStatus('paused');
+    statusState = 'paused';
+    broadcastState();
   }
 }
 
@@ -111,13 +158,14 @@ function resume(runId: number): void {
   if (!isCurrentRun(runId)) return;
   desiredState = 'running';
   if (generator) {
-    postStatus('running');
+    statusState = 'running';
+    broadcastState();
     scheduleNext(0);
   }
 }
 
 function scheduleNext(delayMs: number): void {
-  if (!activeRunId || desiredState !== 'running' || !settings) return;
+  if (!activeRunId || desiredState !== 'running') return;
   clearSchedule();
   const runId = activeRunId;
   scheduleHandle = setTimeout(() => {
@@ -127,17 +175,17 @@ function scheduleNext(delayMs: number): void {
 }
 
 function generateBatch(runId: number): void {
-  if (!isCurrentRun(runId) || desiredState !== 'running' || !generator || !settings) return;
+  if (!isCurrentRun(runId) || desiredState !== 'running' || !generator) return;
 
   try {
-    const updates = generator.generateBatch(settings.updatesPerBatch);
+    const updates = generator.generateBatch(settingsState.updatesPerBatch);
     for (const update of updates) {
       calculator.apply(update);
     }
     publishSnapshot();
-    scheduleNext(settings.batchIntervalMs);
+    scheduleNext(settingsState.batchIntervalMs);
   } catch (error) {
-    handleFailure(error);
+    handleRuntimeFailure(error);
   }
 }
 
@@ -146,28 +194,65 @@ function publishSnapshot(force = false): void {
   const now = Date.now();
   if (!force && now - lastSnapshotAt < snapshotIntervalMs) return;
   lastSnapshotAt = now;
-  post({ type: 'snapshot', runId: activeRunId, instruments: calculator.getSnapshot() });
+  instrumentsState = calculator.getSnapshot();
+  broadcastState();
 }
 
-function postStatus(status: 'running' | 'paused'): void {
-  if (activeRunId) post({ type: 'status', runId: activeRunId, status });
-}
+function handleInitializationFailure(error: unknown): void {
+  const runId = activeRunId;
+  if (!runId) return;
 
-function handleFailure(error: unknown): void {
-  clearSchedule();
-  desiredState = 'paused';
-  if (activeRunId) {
-    post({ type: 'error', runId: activeRunId, message: errorMessage(error) });
+  cleanupProducer();
+  wasmModulePromise = null;
+
+  if (initializationAttempt >= MAX_INITIALIZATION_ATTEMPTS) {
+    desiredState = 'paused';
+    statusState = 'error';
+    errorState = `Producer initialization failed after ${initializationAttempt} attempts: ${errorMessage(error)}`;
+    broadcastState();
+    return;
   }
+
+  const delay = initializationRetryDelaysMs[initializationAttempt - 1];
+  initializationAttempt += 1;
+  statusState = 'initializing';
+  instrumentsState = [];
+  broadcastState();
+  retryHandle = setTimeout(() => {
+    retryHandle = null;
+    if (isCurrentRun(runId)) void initialize(runId);
+  }, delay);
+}
+
+function handleRuntimeFailure(error: unknown): void {
+  cleanupProducer();
+  desiredState = 'paused';
+  statusState = 'error';
+  errorState = errorMessage(error);
+  broadcastState();
 }
 
 function cleanupProducer(): void {
   clearSchedule();
+  cancelRetry();
   if (generator) {
     generator.free();
     generator = null;
   }
-  settings = null;
+}
+
+function resetProducer(): void {
+  cleanupProducer();
+  activeRunId = null;
+  settingsState = { ...DEFAULT_PRODUCER_SETTINGS };
+  statusState = 'initializing';
+  instrumentsState = [];
+  errorState = null;
+  initializationAttempt = 1;
+  wasmBaseUrl = null;
+  desiredState = 'running';
+  lastSnapshotAt = 0;
+  calculator.reset([]);
 }
 
 function clearSchedule(): void {
@@ -177,12 +262,42 @@ function clearSchedule(): void {
   }
 }
 
+function cancelRetry(): void {
+  if (retryHandle !== null) {
+    clearTimeout(retryHandle);
+    retryHandle = null;
+  }
+}
+
 function isCurrentRun(runId: number): boolean {
   return activeRunId === runId;
 }
 
-function post(event: WorkerEvent): void {
-  workerContext.postMessage(event);
+function currentState(): ProducerWorkerState {
+  return {
+    runId: activeRunId ?? 0,
+    settings: { ...settingsState },
+    status: statusState,
+    instruments: instrumentsState,
+    error: errorState,
+    initializationAttempt,
+  };
+}
+
+function postState(port: MessagePort): void {
+  const event: WorkerEvent = { type: 'state', state: currentState() };
+  port.postMessage(event);
+}
+
+function broadcastState(): void {
+  for (const port of ports) {
+    try {
+      postState(port);
+    } catch {
+      ports.delete(port);
+      port.close();
+    }
+  }
 }
 
 function errorMessage(error: unknown): string {

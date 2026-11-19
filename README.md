@@ -8,7 +8,8 @@
 - Pause/Resume without losing accumulated metrics or generating catch-up batches.
 - Settings for 1–50 instruments, 1–1,000 updates per batch, and a 50–2,000 ms batch interval.
 - Validated reactive form; draft edits do not affect the active producer until Apply.
-- A clean producer run on every Apply, including termination of the previous Worker.
+- One Shared Web Worker per origin: all open tabs display and control the same producer run.
+- A clean shared producer run on every Apply, synchronized across all open tabs.
 - Root-level state that survives navigation between Dashboard and Settings.
 - Responsive dark UI, keyboard focus states, and horizontal scrolling inside the table on narrow screens.
 - Visible initialization/runtime errors with a Retry action.
@@ -16,13 +17,13 @@
 ## Architecture
 
 ```text
-Angular 21 + Tailwind CSS 4
-        │ commands and throttled snapshots
+Angular tabs + Tailwind CSS 4
+        │ commands and throttled state snapshots
         ▼
-Root-level ProducerService (signals, runId, lifecycle)
+Root-level ProducerService per tab (signals + MessagePort)
         │ postMessage
         ▼
-Web Worker (scheduling + metric aggregation)
+Shared Web Worker (one run, retries, scheduling + metric aggregation)
         │ generateBatch(...)
         ▼
 Rust + wasm-bindgen (stateful market generator)
@@ -31,9 +32,13 @@ Rust + wasm-bindgen (stateful market generator)
 ### Runtime responsibilities
 
 - **Angular** owns routing, presentation, formatting, form validation, and user commands.
-- **ProducerService** owns the single Worker, active settings, signals, run identity, errors, and cleanup.
-- **The Worker** owns non-overlapping `setTimeout` scheduling, processes every generated update, and sends UI snapshots at most once every 100 ms.
+- **ProducerService** owns one MessagePort connection per tab and mirrors the shared run into Angular signals.
+- **The Shared Worker** owns the single producer, active settings, run identity, initialization retries, non-overlapping `setTimeout` scheduling, and broadcasts UI snapshots at most once every 100 ms.
 - **Rust/Wasm** owns deterministic pseudo-randomness, per-instrument price state, and market-update generation.
+
+### Multiple tabs
+
+All tabs on the same origin connect to one Shared Worker. A newly opened tab receives the current run, settings, status, and metrics instead of starting another producer. Pause/Resume and Apply from any tab update every connected tab. Closing one tab closes only its MessagePort; producer resources are released after the last tab disconnects. Different origins and separate browser profiles do not share a worker.
 
 ### Feature-Sliced Design
 
@@ -62,7 +67,7 @@ The optional **`widgets`** layer is intentionally omitted: this small applicatio
 - VWAP is cumulative traded value divided by cumulative quantity, not a rolling-window average.
 - Imbalance is `(bidQuantity - askQuantity) / (bidQuantity + askQuantity)`; unavailable values render as `—`.
 - The complete update/trade history is never stored.
-- Each run has a `runId`; messages from replaced Workers cannot overwrite current state.
+- Each run has a `runId`; stale commands and state snapshots from previous runs cannot overwrite current state.
 - Pause cancels the schedule. Resume continues the same state and does not backfill the paused interval.
 
 ## Project structure
@@ -143,19 +148,26 @@ npm run test:all
 npx tsc --noEmit -p tsconfig.app.json
 ```
 
-The current suite contains 28 Angular/TypeScript tests and 7 Rust tests. Browser verification also covers Pause/Resume, Apply, navigation, validation, narrow layouts, and the maximum nominal mode of 50 instruments and 20,000 updates/second.
+The current suite contains 30 Angular/TypeScript tests and 7 Rust tests, including multi-tab synchronization and last-tab cleanup. Browser verification also covers Pause/Resume, Apply, navigation, validation, narrow layouts, and the maximum nominal mode of 50 instruments and 20,000 updates/second.
 
 ### Manual retry verification
 
-1. Open Chrome DevTools → **Network** and enable **Disable cache**.
-2. Open **Network request blocking**, enable it, and add this URLPattern:
+Temporarily rename the Wasm file to simulate an initialization failure:
 
-   ```text
-   *://*:*/wasm/market_generator_bg.wasm
+1. From the repository root, make the Wasm binary unavailable:
+
+   ```bash
+   mv public/wasm/market_generator_bg.wasm public/wasm/market_generator_bg.wasm.off
    ```
 
-3. Reload the page with DevTools open. The dashboard should retry initialization five times, then show an error and **Retry producer**.
-4. Disable request blocking and click **Retry producer**. The application should recover without another reload.
+2. Close other application tabs, then open or reload the dashboard. It should retry initialization five times, then show an error and **Retry producer**.
+3. Restore the Wasm binary without restarting the development server:
+
+   ```bash
+   mv public/wasm/market_generator_bg.wasm.off public/wasm/market_generator_bg.wasm
+   ```
+
+4. Click **Retry producer**. The application should recover without another reload.
 
 ## Production build
 

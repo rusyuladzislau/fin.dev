@@ -1,30 +1,44 @@
 import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProducerService } from './producer.service';
+import { DEFAULT_PRODUCER_SETTINGS } from './producer.models';
 import { InstrumentMetrics } from '../../instrument';
-import { WorkerCommand, WorkerEvent } from '../api/worker-protocol';
+import {
+  ProducerWorkerState,
+  WorkerCommand,
+  WorkerEvent,
+} from '../api/worker-protocol';
 
-class MockWorker {
-  static instances: MockWorker[] = [];
+class MockMessagePort {
   onmessage: ((event: MessageEvent<WorkerEvent>) => void) | null = null;
-  onerror: ((event: ErrorEvent) => void) | null = null;
+  onmessageerror: (() => void) | null = null;
   readonly messages: WorkerCommand[] = [];
-  terminated = false;
-
-  constructor() {
-    MockWorker.instances.push(this);
-  }
+  closed = false;
 
   postMessage(command: WorkerCommand): void {
     this.messages.push(command);
   }
 
-  terminate(): void {
-    this.terminated = true;
+  start(): void {
+    this.closed = false;
+  }
+
+  close(): void {
+    this.closed = true;
   }
 
   emit(event: WorkerEvent): void {
     this.onmessage?.({ data: event } as MessageEvent<WorkerEvent>);
+  }
+}
+
+class MockSharedWorker {
+  static instances: MockSharedWorker[] = [];
+  readonly port = new MockMessagePort();
+  onerror: ((event: ErrorEvent) => void) | null = null;
+
+  constructor() {
+    MockSharedWorker.instances.push(this);
   }
 }
 
@@ -39,207 +53,170 @@ function metrics(volume: number): InstrumentMetrics {
   };
 }
 
+function workerState(overrides: Partial<ProducerWorkerState> = {}): ProducerWorkerState {
+  return {
+    runId: 1,
+    settings: { ...DEFAULT_PRODUCER_SETTINGS },
+    status: 'running',
+    instruments: [],
+    error: null,
+    initializationAttempt: 1,
+    ...overrides,
+  };
+}
+
 describe('ProducerService', () => {
   let service: ProducerService;
 
   beforeEach(() => {
-    MockWorker.instances = [];
-    vi.stubGlobal('Worker', MockWorker);
+    MockSharedWorker.instances = [];
+    vi.stubGlobal('SharedWorker', MockSharedWorker);
     TestBed.configureTestingModule({});
     service = TestBed.inject(ProducerService);
   });
 
   afterEach(() => {
     TestBed.resetTestingModule();
-    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
-  it('starts once with default settings', () => {
-    expect(MockWorker.instances).toHaveLength(1);
-    expect(service.activeSettings()).toEqual({
-      instrumentCount: 5,
-      updatesPerBatch: 100,
-      batchIntervalMs: 500,
+  function emitState(overrides: Partial<ProducerWorkerState> = {}): void {
+    MockSharedWorker.instances[0].port.emit({
+      type: 'state',
+      state: workerState(overrides),
     });
+  }
+
+  it('creates one shared connection and attaches to its producer', () => {
+    const worker = MockSharedWorker.instances[0];
+    expect(MockSharedWorker.instances).toHaveLength(1);
+    expect(service.activeSettings()).toEqual(DEFAULT_PRODUCER_SETTINGS);
     expect(service.status()).toBe('initializing');
-    expect(MockWorker.instances[0].messages[0]).toMatchObject({
-      type: 'initialize',
-      runId: 1,
+    expect(worker.port.messages[0]).toEqual({
+      type: 'attach',
+      wasmBaseUrl: new URL('wasm/', document.baseURI).toString(),
     });
   });
 
-  it('pauses and resumes the same run', () => {
-    const worker = MockWorker.instances[0];
-    worker.emit({ type: 'status', runId: 1, status: 'running' });
+  it('applies state received from the shared producer', () => {
+    const settings = { instrumentCount: 10, updatesPerBatch: 200, batchIntervalMs: 100 };
+    emitState({
+      runId: 3,
+      settings,
+      status: 'paused',
+      instruments: [metrics(40)],
+      initializationAttempt: 2,
+    });
+
+    expect(service.runId()).toBe(3);
+    expect(service.activeSettings()).toEqual(settings);
+    expect(service.status()).toBe('paused');
+    expect(service.instruments()).toEqual([metrics(40)]);
+    expect(service.initializationAttempt()).toBe(2);
+  });
+
+  it('sends pause and resume commands through the same port', () => {
+    const worker = MockSharedWorker.instances[0];
+    emitState({ status: 'running' });
     service.pause();
-    expect(worker.messages.at(-1)).toEqual({ type: 'pause', runId: 1 });
+    expect(worker.port.messages.at(-1)).toEqual({ type: 'pause', runId: 1 });
 
-    worker.emit({ type: 'status', runId: 1, status: 'paused' });
+    emitState({ status: 'paused', instruments: [metrics(40)] });
     service.resume();
-    expect(worker.messages.at(-1)).toEqual({ type: 'resume', runId: 1 });
-    expect(MockWorker.instances).toHaveLength(1);
+    expect(worker.port.messages.at(-1)).toEqual({ type: 'resume', runId: 1 });
+    expect(MockSharedWorker.instances).toHaveLength(1);
   });
 
-  it('applies settings by cleaning up and resetting to a new run', () => {
-    const previousWorker = MockWorker.instances[0];
-    previousWorker.emit({ type: 'snapshot', runId: 1, instruments: [metrics(40)] });
-    previousWorker.emit({ type: 'status', runId: 1, status: 'paused' });
+  it('applies settings through the shared worker and rejects older runs', () => {
+    const settings = { instrumentCount: 10, updatesPerBatch: 200, batchIntervalMs: 100 };
+    emitState({ instruments: [metrics(40)] });
+    service.applySettings(settings);
 
-    service.applySettings({ instrumentCount: 10, updatesPerBatch: 200, batchIntervalMs: 100 });
+    expect(MockSharedWorker.instances[0].port.messages.at(-1)).toEqual({
+      type: 'apply-settings',
+      settings,
+    });
+    expect(MockSharedWorker.instances).toHaveLength(1);
 
-    expect(previousWorker.terminated).toBe(true);
-    expect(MockWorker.instances).toHaveLength(2);
+    emitState({ runId: 2, settings, status: 'initializing' });
+    emitState({
+      runId: 1,
+      status: 'error',
+      instruments: [metrics(999)],
+      error: 'Stale failure',
+    });
+
     expect(service.runId()).toBe(2);
-    expect(service.instruments()).toEqual([]);
-    expect(service.status()).toBe('initializing');
-    expect(service.activeSettings().instrumentCount).toBe(10);
-
-    const currentWorker = MockWorker.instances[1];
-    currentWorker.emit({ type: 'status', runId: 2, status: 'running' });
-    expect(service.status()).toBe('running');
-  });
-
-  it('rejects snapshots and errors from previous runs', () => {
-    const previousWorker = MockWorker.instances[0];
-    service.applySettings({ instrumentCount: 5, updatesPerBatch: 50, batchIntervalMs: 250 });
-    previousWorker.emit({ type: 'snapshot', runId: 1, instruments: [metrics(999)] });
-    previousWorker.emit({ type: 'error', runId: 1, message: 'Stale failure' });
-
+    expect(service.activeSettings()).toEqual(settings);
     expect(service.instruments()).toEqual([]);
     expect(service.error()).toBeNull();
     expect(service.status()).toBe('initializing');
   });
 
-  it('does not create another producer when asked to pause repeatedly', () => {
-    const worker = MockWorker.instances[0];
-    worker.emit({ type: 'status', runId: 1, status: 'paused' });
-    service.pause();
-    service.pause();
-    expect(worker.messages).toHaveLength(1);
-    expect(MockWorker.instances).toHaveLength(1);
+  it('rejects invalid settings without sending a command', () => {
+    const messageCount = MockSharedWorker.instances[0].port.messages.length;
+    expect(() =>
+      service.applySettings({ instrumentCount: 0, updatesPerBatch: 100, batchIntervalMs: 500 }),
+    ).toThrow('Enter a value from 1 to 50.');
+    expect(MockSharedWorker.instances[0].port.messages).toHaveLength(messageCount);
   });
 
-  it('surfaces runtime errors without restarting accumulated metrics', () => {
-    vi.useFakeTimers();
-    const worker = MockWorker.instances[0];
-    worker.emit({ type: 'status', runId: 1, status: 'running' });
-    worker.emit({ type: 'snapshot', runId: 1, instruments: [metrics(40)] });
-    worker.emit({ type: 'error', runId: 1, message: 'Generation failed' });
+  it('keeps the shared connection open for retry after a producer error state', () => {
+    const worker = MockSharedWorker.instances[0];
+    emitState({ instruments: [metrics(40)] });
+    emitState({ status: 'error', instruments: [metrics(40)], error: 'Generation failed' });
 
-    vi.advanceTimersByTime(10_000);
     expect(service.status()).toBe('error');
     expect(service.error()).toBe('Generation failed');
     expect(service.instruments()).toEqual([metrics(40)]);
-    expect(worker.terminated).toBe(true);
-    expect(MockWorker.instances).toHaveLength(1);
-  });
-
-  it('terminates the worker after a native runtime error and preserves metrics', () => {
-    vi.useFakeTimers();
-    const worker = MockWorker.instances[0];
-    const preventDefault = vi.fn();
-    worker.emit({ type: 'status', runId: 1, status: 'running' });
-    worker.emit({ type: 'snapshot', runId: 1, instruments: [metrics(40)] });
-
-    worker.onerror?.({
-      message: 'Native worker failure',
-      preventDefault,
-    } as unknown as ErrorEvent);
-
-    vi.advanceTimersByTime(10_000);
-    expect(preventDefault).toHaveBeenCalledTimes(1);
-    expect(worker.terminated).toBe(true);
-    expect(service.status()).toBe('error');
-    expect(service.error()).toBe('Native worker failure');
-    expect(service.instruments()).toEqual([metrics(40)]);
-    expect(MockWorker.instances).toHaveLength(1);
-  });
-
-  it('retries initialization with backoff and recovers within the same run', () => {
-    vi.useFakeTimers();
-    const firstWorker = MockWorker.instances[0];
-    firstWorker.emit({ type: 'error', runId: 1, message: 'Wasm unavailable' });
-
-    expect(firstWorker.terminated).toBe(true);
-    expect(service.status()).toBe('initializing');
-    expect(service.initializationAttempt()).toBe(2);
-    expect(MockWorker.instances).toHaveLength(1);
-
-    vi.advanceTimersByTime(499);
-    expect(MockWorker.instances).toHaveLength(1);
-    vi.advanceTimersByTime(1);
-    expect(MockWorker.instances).toHaveLength(2);
-
-    MockWorker.instances[1].emit({ type: 'error', runId: 1, message: 'Wasm unavailable' });
-    vi.advanceTimersByTime(1_000);
-    expect(MockWorker.instances).toHaveLength(3);
-
-    MockWorker.instances[2].emit({ type: 'status', runId: 1, status: 'running' });
-    expect(service.status()).toBe('running');
-    expect(service.error()).toBeNull();
-    expect(service.runId()).toBe(1);
-    expect(service.initializationAttempt()).toBe(3);
-  });
-
-  it('stops after five initialization attempts and allows a manual retry', () => {
-    vi.useFakeTimers();
-    const delays = [500, 1_000, 2_000, 4_000];
-
-    for (let index = 0; index < 5; index += 1) {
-      MockWorker.instances[index].emit({
-        type: 'error',
-        runId: 1,
-        message: 'Wasm unavailable',
-      });
-      if (index < delays.length) {
-        vi.advanceTimersByTime(delays[index]);
-      }
-    }
-
-    expect(MockWorker.instances).toHaveLength(5);
-    expect(service.status()).toBe('error');
-    expect(service.error()).toBe(
-      'Producer initialization failed after 5 attempts: Wasm unavailable',
-    );
-    expect(service.initializationAttempt()).toBe(5);
-
-    vi.advanceTimersByTime(10_000);
-    expect(MockWorker.instances).toHaveLength(5);
+    expect(worker.port.closed).toBe(false);
 
     service.applySettings({ ...service.activeSettings() });
-    expect(MockWorker.instances).toHaveLength(6);
-    expect(service.runId()).toBe(2);
-    expect(service.status()).toBe('initializing');
-    expect(service.initializationAttempt()).toBe(1);
-    expect(service.error()).toBeNull();
-  });
-
-  it('cancels a scheduled retry when settings are applied', () => {
-    vi.useFakeTimers();
-    MockWorker.instances[0].emit({ type: 'error', runId: 1, message: 'Wasm unavailable' });
-
-    service.applySettings({ instrumentCount: 10, updatesPerBatch: 200, batchIntervalMs: 100 });
-    vi.advanceTimersByTime(10_000);
-
-    expect(MockWorker.instances).toHaveLength(2);
-    expect(service.runId()).toBe(2);
-    expect(service.initializationAttempt()).toBe(1);
-    expect(MockWorker.instances[1].messages[0]).toMatchObject({
-      type: 'initialize',
-      runId: 2,
-      settings: { instrumentCount: 10, updatesPerBatch: 200, batchIntervalMs: 100 },
+    expect(worker.port.messages.at(-1)).toEqual({
+      type: 'apply-settings',
+      settings: DEFAULT_PRODUCER_SETTINGS,
     });
   });
 
-  it('cancels a scheduled retry when disposed', () => {
-    vi.useFakeTimers();
-    MockWorker.instances[0].emit({ type: 'error', runId: 1, message: 'Wasm unavailable' });
+  it('closes its port after a native shared worker error and preserves metrics', () => {
+    const worker = MockSharedWorker.instances[0];
+    const preventDefault = vi.fn();
+    emitState({ instruments: [metrics(40)] });
 
+    worker.onerror?.({
+      message: 'Native shared worker failure',
+      preventDefault,
+    } as unknown as ErrorEvent);
+
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(worker.port.closed).toBe(true);
+    expect(service.status()).toBe('error');
+    expect(service.error()).toBe('Native shared worker failure');
+    expect(service.instruments()).toEqual([metrics(40)]);
+  });
+
+  it('detaches and closes only its own port when disposed', () => {
+    const worker = MockSharedWorker.instances[0];
+    emitState({ instruments: [metrics(40)] });
     service.dispose();
-    vi.advanceTimersByTime(10_000);
 
-    expect(MockWorker.instances).toHaveLength(1);
-    expect(MockWorker.instances[0].terminated).toBe(true);
+    expect(worker.port.messages.at(-1)).toEqual({ type: 'detach' });
+    expect(worker.port.closed).toBe(true);
+    expect(service.runId()).toBe(0);
+    expect(service.instruments()).toEqual([]);
+    expect(service.status()).toBe('initializing');
+    expect(MockSharedWorker.instances).toHaveLength(1);
+  });
+
+  it('does not send pause repeatedly when the shared run is not running', () => {
+    const worker = MockSharedWorker.instances[0];
+    emitState({ status: 'paused' });
+    const messageCount = worker.port.messages.length;
+
+    service.pause();
+    service.pause();
+
+    expect(worker.port.messages).toHaveLength(messageCount);
+    expect(MockSharedWorker.instances).toHaveLength(1);
   });
 });

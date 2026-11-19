@@ -6,16 +6,17 @@ import {
   ProducerSettingsInput,
   validateProducerSettings,
 } from './producer-settings';
-import { WorkerEvent } from '../api/worker-protocol';
-
-const MAX_INITIALIZATION_ATTEMPTS = 5;
-const INITIALIZATION_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000] as const;
+import {
+  MAX_INITIALIZATION_ATTEMPTS,
+  WorkerCommand,
+  WorkerEvent,
+} from '../api/worker-protocol';
 
 @Injectable({ providedIn: 'root' })
 export class ProducerService {
   private readonly destroyRef = inject(DestroyRef);
-  private worker: Worker | null = null;
-  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private sharedWorker: SharedWorker | null = null;
+  private port: MessagePort | null = null;
 
   private readonly settingsState = signal<ProducerSettings>({ ...DEFAULT_PRODUCER_SETTINGS });
   private readonly runIdState = signal(0);
@@ -37,7 +38,7 @@ export class ProducerService {
 
   constructor() {
     this.destroyRef.onDestroy(() => this.dispose());
-    this.startNewRun(this.settingsState());
+    this.connect();
   }
 
   pause(): void {
@@ -55,137 +56,100 @@ export class ProducerService {
       const firstError = Object.values(validateProducerSettings(input))[0];
       throw new Error(firstError ?? 'Invalid producer settings.');
     }
-    this.startNewRun(input);
+
+    if (!this.port) this.connect();
+    this.postCommand({ type: 'apply-settings', settings: input });
   }
 
   dispose(): void {
-    this.cancelScheduledRetry();
-    this.stopWorker();
-    this.instrumentsState.set([]);
-    this.statusState.set('initializing');
-  }
-
-  private startNewRun(settings: ProducerSettings): void {
-    this.cancelScheduledRetry();
-    this.stopWorker();
-    const runId = this.runIdState() + 1;
-    this.runIdState.set(runId);
-    this.settingsState.set({ ...settings });
+    this.disconnect(true);
+    this.runIdState.set(0);
     this.instrumentsState.set([]);
     this.errorState.set(null);
     this.initializationAttemptState.set(1);
     this.statusState.set('initializing');
-    this.startWorker(settings);
   }
 
-  private startWorker(settings: ProducerSettings): void {
-    const runId = this.runIdState();
+  private connect(): void {
+    if (this.port) return;
+
+    if (typeof SharedWorker === 'undefined') {
+      this.setConnectionError('SharedWorker is not supported by this browser.');
+      return;
+    }
 
     try {
-      const worker = new Worker(new URL('../api/market-producer.worker.ts', import.meta.url), {
+      const worker = new SharedWorker(new URL('../api/market-producer.worker.ts', import.meta.url), {
         type: 'module',
-        name: `market-producer-${runId}-attempt-${this.initializationAttemptState()}`,
+        name: 'fin-dev-market-producer',
       });
-      this.worker = worker;
-      worker.onmessage = (event: MessageEvent<WorkerEvent>) => {
-        if (worker !== this.worker || event.data.runId !== this.runIdState()) return;
+      const port = worker.port;
+      this.sharedWorker = worker;
+      this.port = port;
+
+      port.onmessage = (event: MessageEvent<WorkerEvent>) => {
+        if (port !== this.port) return;
         this.handleWorkerEvent(event.data);
       };
-      worker.onerror = (event: ErrorEvent) => {
-        if (worker !== this.worker) return;
-        event.preventDefault();
-        this.handleProducerFailure(event.message || 'The market producer worker failed to start.');
+      port.onmessageerror = () => {
+        this.setConnectionError('The market producer sent an unreadable message.');
       };
-      worker.postMessage({
-        type: 'initialize',
-        runId,
-        settings,
+      worker.onerror = (event: ErrorEvent) => {
+        if (worker !== this.sharedWorker) return;
+        event.preventDefault();
+        this.setConnectionError(event.message || 'The shared market producer failed.');
+      };
+
+      port.start();
+      port.postMessage({
+        type: 'attach',
         wasmBaseUrl: new URL('wasm/', document.baseURI).toString(),
-      });
+      } satisfies WorkerCommand);
     } catch (error) {
-      this.handleProducerFailure(
-        error instanceof Error ? error.message : 'Unable to create the market producer.',
+      this.setConnectionError(
+        error instanceof Error ? error.message : 'Unable to connect to the shared market producer.',
       );
     }
   }
 
   private handleWorkerEvent(event: WorkerEvent): void {
-    switch (event.type) {
-      case 'ready':
-        this.instrumentsState.set(
-          event.instruments.map((instrument) => ({
-            instrument,
-            lastPriceCents: null,
-            spreadCents: null,
-            volume: 0,
-            vwapCents: null,
-            imbalance: null,
-          })),
-        );
-        break;
-      case 'snapshot':
-        this.instrumentsState.set(event.instruments);
-        break;
-      case 'status':
-        this.statusState.set(event.status);
-        break;
-      case 'error':
-        this.handleProducerFailure(event.message);
-        break;
-    }
+    const state = event.state;
+    if (state.runId < this.runIdState()) return;
+
+    this.runIdState.set(state.runId);
+    this.settingsState.set({ ...state.settings });
+    this.statusState.set(state.status);
+    this.instrumentsState.set(state.instruments);
+    this.errorState.set(state.error);
+    this.initializationAttemptState.set(state.initializationAttempt);
   }
 
-  private handleProducerFailure(message: string): void {
-    if (this.statusState() === 'initializing') {
-      this.scheduleInitializationRetry(message);
-      return;
-    }
-    this.setError(message);
+  private postCommand(command: WorkerCommand): void {
+    this.port?.postMessage(command);
   }
 
-  private scheduleInitializationRetry(message: string): void {
-    this.stopWorker();
-    const attempt = this.initializationAttemptState();
-    if (attempt >= MAX_INITIALIZATION_ATTEMPTS) {
-      this.setError(`Producer initialization failed after ${attempt} attempts: ${message}`);
-      return;
-    }
-
-    const delay = INITIALIZATION_RETRY_DELAYS_MS[attempt - 1];
-    const runId = this.runIdState();
-    this.initializationAttemptState.set(attempt + 1);
-    this.instrumentsState.set([]);
-    this.statusState.set('initializing');
-    this.cancelScheduledRetry();
-    this.retryTimer = setTimeout(() => {
-      this.retryTimer = null;
-      if (runId !== this.runIdState()) return;
-      this.startWorker(this.settingsState());
-    }, delay);
-  }
-
-  private cancelScheduledRetry(): void {
-    if (this.retryTimer === null) return;
-    clearTimeout(this.retryTimer);
-    this.retryTimer = null;
-  }
-
-  private postCommand(command: { type: 'pause' | 'resume'; runId: number }): void {
-    this.worker?.postMessage(command);
-  }
-
-  private setError(message: string): void {
-    this.cancelScheduledRetry();
-    this.stopWorker();
+  private setConnectionError(message: string): void {
+    this.disconnect(false);
     this.errorState.set(message);
     this.statusState.set('error');
   }
 
-  private stopWorker(): void {
-    if (!this.worker) return;
-    this.worker.onmessage = null;
-    this.worker.onerror = null;
-    this.worker.terminate();
-    this.worker = null;
+  private disconnect(notifyWorker: boolean): void {
+    const port = this.port;
+    if (port) {
+      if (notifyWorker) {
+        try {
+          port.postMessage({ type: 'detach' } satisfies WorkerCommand);
+        } catch {
+          // The browser may already have closed the port during page teardown.
+        }
+      }
+      port.onmessage = null;
+      port.onmessageerror = null;
+      port.close();
+    }
+    if (this.sharedWorker) this.sharedWorker.onerror = null;
+    this.port = null;
+    this.sharedWorker = null;
   }
 }

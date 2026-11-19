@@ -1,34 +1,24 @@
 import { InstrumentMetrics } from '../../instrument';
 import { ProducerSettings, ProducerStatus } from '../model/producer.models';
 
-interface WorkerMessage {
+export const MAX_INITIALIZATION_ATTEMPTS = 5;
+
+export interface ProducerWorkerState {
   runId: number;
+  settings: ProducerSettings;
+  status: ProducerStatus;
+  instruments: InstrumentMetrics[];
+  error: string | null;
+  initializationAttempt: number;
 }
 
 export type WorkerCommand =
-  | (WorkerMessage & {
-      type: 'initialize';
-      settings: ProducerSettings;
-      wasmBaseUrl: string;
-    })
-  | (WorkerMessage & { type: 'pause' })
-  | (WorkerMessage & { type: 'resume' })
-  | (WorkerMessage & { type: 'dispose' });
+  | { type: 'attach'; wasmBaseUrl: string }
+  | { type: 'detach' }
+  | { type: 'apply-settings'; settings: ProducerSettings }
+  | { type: 'pause' | 'resume'; runId: number };
 
-export type WorkerEvent =
-  | (WorkerMessage & {
-      type: 'ready';
-      instruments: string[];
-    })
-  | (WorkerMessage & {
-      type: 'snapshot';
-      instruments: InstrumentMetrics[];
-    })
-  | (WorkerMessage & {
-      type: 'status';
-      status: Exclude<ProducerStatus, 'initializing' | 'error'>;
-    })
-  | (WorkerMessage & {
-      type: 'error';
-      message: string;
-    });
+export interface WorkerEvent {
+  type: 'state';
+  state: ProducerWorkerState;
+}
