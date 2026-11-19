@@ -131,6 +131,28 @@ describe('ProducerService', () => {
     expect(service.status()).toBe('error');
     expect(service.error()).toBe('Generation failed');
     expect(service.instruments()).toEqual([metrics(40)]);
+    expect(worker.terminated).toBe(true);
+    expect(MockWorker.instances).toHaveLength(1);
+  });
+
+  it('terminates the worker after a native runtime error and preserves metrics', () => {
+    vi.useFakeTimers();
+    const worker = MockWorker.instances[0];
+    const preventDefault = vi.fn();
+    worker.emit({ type: 'status', runId: 1, status: 'running' });
+    worker.emit({ type: 'snapshot', runId: 1, instruments: [metrics(40)] });
+
+    worker.onerror?.({
+      message: 'Native worker failure',
+      preventDefault,
+    } as unknown as ErrorEvent);
+
+    vi.advanceTimersByTime(10_000);
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(worker.terminated).toBe(true);
+    expect(service.status()).toBe('error');
+    expect(service.error()).toBe('Native worker failure');
+    expect(service.instruments()).toEqual([metrics(40)]);
     expect(MockWorker.instances).toHaveLength(1);
   });
 

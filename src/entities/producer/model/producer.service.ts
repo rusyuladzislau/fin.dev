@@ -176,6 +176,7 @@ export class ProducerService {
 
   private setError(message: string): void {
     this.cancelScheduledRetry();
+    this.stopWorker();
     this.errorState.set(message);
     this.statusState.set('error');
   }
