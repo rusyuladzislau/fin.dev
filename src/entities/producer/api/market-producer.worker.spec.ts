@@ -198,6 +198,134 @@ describe('market-producer shared worker', () => {
     expect(secondTab.closed).toBe(true);
   });
 
+  it('applies settings from paused with cleanup and starts a clean running run', async () => {
+    await import('./market-producer.worker');
+    const port = createPort();
+    attach(port);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(latestState(port).instruments[0].volume).toBe(20);
+    dispatch(port, { type: 'pause', runId: 1 });
+
+    const nextSettings = { instrumentCount: 1, updatesPerBatch: 1, batchIntervalMs: 100 };
+    dispatch(port, { type: 'apply-settings', settings: nextSettings });
+
+    expect(freeGenerator).toHaveBeenCalledTimes(1);
+    expect(generatorCount).toBe(1);
+    expect(latestState(port)).toMatchObject({
+      runId: 2,
+      settings: nextSettings,
+      status: 'initializing',
+      instruments: [],
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(generatorCount).toBe(2);
+    expect(generateBatch).toHaveBeenLastCalledWith(1);
+    expect(latestState(port)).toMatchObject({ runId: 2, status: 'running' });
+    expect(latestState(port).instruments[0].volume).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(latestState(port).instruments[0].volume).toBe(20);
+
+    dispatch(port, { type: 'pause', runId: 2 });
+  });
+
+  it('ignores a late initialization result after applying settings', async () => {
+    let finishWasmInitialization!: () => void;
+    initializeWasm.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWasmInitialization = resolve;
+        }),
+    );
+
+    await import('./market-producer.worker');
+    const port = createPort();
+    attach(port);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const nextSettings = { instrumentCount: 1, updatesPerBatch: 25, batchIntervalMs: 100 };
+    dispatch(port, { type: 'apply-settings', settings: nextSettings });
+    const eventCountAfterApply = port.events.length;
+
+    expect(latestState(port)).toMatchObject({
+      runId: 2,
+      settings: nextSettings,
+      status: 'initializing',
+      instruments: [],
+    });
+
+    finishWasmInitialization();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(generatorCount).toBe(1);
+    expect(generateBatch).toHaveBeenCalledTimes(1);
+    expect(generateBatch).toHaveBeenCalledWith(25);
+    expect(latestState(port)).toMatchObject({ runId: 2, status: 'running' });
+    expect(port.events.slice(eventCountAfterApply).every((event) => event.state.runId === 2)).toBe(
+      true,
+    );
+
+    dispatch(port, { type: 'pause', runId: 2 });
+  });
+
+  it('reports runtime generation errors and stops the schedule', async () => {
+    await import('./market-producer.worker');
+    const port = createPort();
+    attach(port);
+    await vi.advanceTimersByTimeAsync(0);
+
+    dispatch(port, { type: 'pause', runId: 1 });
+    expect(latestState(port).instruments[0].volume).toBe(10);
+
+    generateBatch.mockImplementation(() => {
+      throw new Error('Generation failed unexpectedly');
+    });
+    dispatch(port, { type: 'resume', runId: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(latestState(port)).toMatchObject({
+      runId: 1,
+      status: 'error',
+      error: 'Generation failed unexpectedly',
+    });
+    expect(latestState(port).instruments[0].volume).toBe(10);
+    expect(freeGenerator).toHaveBeenCalledTimes(1);
+
+    const batchCountAfterError = generateBatch.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(generateBatch).toHaveBeenCalledTimes(batchCountAfterError);
+  });
+
+  it('ignores malformed commands without stopping the shared run', async () => {
+    await import('./market-producer.worker');
+    const port = createPort();
+    attach(port);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const eventCount = port.events.length;
+    const batchCount = generateBatch.mock.calls.length;
+    const dispatchUnknown = (command: unknown): void => {
+      const handler = port.onmessage as unknown as (event: MessageEvent<unknown>) => void;
+      handler({ data: command } as MessageEvent<unknown>);
+    };
+
+    dispatchUnknown(null);
+    dispatchUnknown({ type: 'unknown' });
+    dispatchUnknown({ type: 'apply-settings' });
+    dispatchUnknown({ type: 'pause', runId: '1' });
+
+    expect(port.events).toHaveLength(eventCount);
+    expect(generateBatch).toHaveBeenCalledTimes(batchCount);
+    expect(latestState(port)).toMatchObject({ runId: 1, status: 'running' });
+
+    dispatch(port, { type: 'pause', runId: 1 });
+    expect(latestState(port).status).toBe('paused');
+  });
+
   it('retries initialization five times and recovers through a shared manual retry', async () => {
     initializeWasm.mockRejectedValue(new Error('Wasm unavailable'));
     await import('./market-producer.worker');

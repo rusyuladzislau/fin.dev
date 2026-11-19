@@ -208,6 +208,37 @@ describe('ProducerService', () => {
     expect(MockSharedWorker.instances).toHaveLength(1);
   });
 
+  it('reports malformed worker events without losing the last metrics', () => {
+    const worker = MockSharedWorker.instances[0];
+    emitState({ instruments: [metrics(40)] });
+
+    worker.port.onmessage?.({ data: null } as unknown as MessageEvent<WorkerEvent>);
+
+    expect(service.status()).toBe('error');
+    expect(service.error()).toBe('The market producer sent an invalid message.');
+    expect(service.instruments()).toEqual([metrics(40)]);
+    expect(worker.port.closed).toBe(true);
+  });
+
+  it('reports shared worker construction failures', () => {
+    service.dispose();
+    TestBed.resetTestingModule();
+    vi.stubGlobal(
+      'SharedWorker',
+      class {
+        constructor() {
+          throw new Error('Worker creation failed');
+        }
+      },
+    );
+    TestBed.configureTestingModule({});
+    service = TestBed.inject(ProducerService);
+
+    expect(service.status()).toBe('error');
+    expect(service.error()).toBe('Worker creation failed');
+    expect(service.instruments()).toEqual([]);
+  });
+
   it('does not send pause repeatedly when the shared run is not running', () => {
     const worker = MockSharedWorker.instances[0];
     emitState({ status: 'paused' });

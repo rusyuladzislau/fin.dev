@@ -4,9 +4,9 @@ import { InstrumentMetrics, MarketUpdate, MetricCalculator } from '../../instrum
 import { DEFAULT_PRODUCER_SETTINGS, ProducerSettings, ProducerStatus } from '../model/producer.models';
 import { isProducerSettings } from '../model/producer-settings';
 import {
+  isWorkerCommand,
   MAX_INITIALIZATION_ATTEMPTS,
   ProducerWorkerState,
-  WorkerCommand,
   WorkerEvent,
 } from './worker-protocol';
 
@@ -51,13 +51,15 @@ workerContext.onconnect = (event: MessageEvent): void => {
   if (!port) return;
 
   ports.add(port);
-  port.onmessage = (message: MessageEvent<WorkerCommand>): void => {
+  port.onmessage = (message: MessageEvent<unknown>): void => {
     handleCommand(port, message.data);
   };
   port.start();
 };
 
-function handleCommand(port: MessagePort, command: WorkerCommand): void {
+function handleCommand(port: MessagePort, command: unknown): void {
+  if (!isWorkerCommand(command)) return;
+
   switch (command.type) {
     case 'attach':
       if (activeRunId === null) {

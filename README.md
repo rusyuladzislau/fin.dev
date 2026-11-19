@@ -2,6 +2,10 @@
 
 **Market simulator** — a realtime simulated-market dashboard built with Angular 21, strict TypeScript, Tailwind CSS 4, Rust, WebAssembly, and a Web Worker. It generates synthetic order-book and trade updates entirely in the browser and aggregates cumulative instrument metrics without retaining trade history.
 
+## Live demo
+
+[Open the deployed application](https://fin-dev-tech-task.vercel.app/dashboard)
+
 ## Features
 
 - Dashboard with last traded price, bid–ask spread, cumulative volume, VWAP, and order-book imbalance for every configured instrument.
@@ -148,7 +152,7 @@ npm run test:all
 npx tsc --noEmit -p tsconfig.app.json
 ```
 
-The current suite contains 30 Angular/TypeScript tests and 7 Rust tests, including multi-tab synchronization and last-tab cleanup. Browser verification also covers Pause/Resume, Apply, navigation, validation, narrow layouts, and the maximum nominal mode of 50 instruments and 20,000 updates/second.
+The current suite contains 40 Angular/TypeScript tests and 7 Rust tests, including multi-tab synchronization and last-tab cleanup. Browser verification also covers Pause/Resume, Apply, navigation, validation, narrow layouts, and the maximum nominal mode of 50 instruments and 20,000 updates/second.
 
 ### Manual retry verification
 

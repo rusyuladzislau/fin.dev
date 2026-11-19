@@ -7,6 +7,7 @@ import {
   validateProducerSettings,
 } from './producer-settings';
 import {
+  isWorkerEvent,
   MAX_INITIALIZATION_ATTEMPTS,
   WorkerCommand,
   WorkerEvent,
@@ -87,8 +88,12 @@ export class ProducerService {
       this.sharedWorker = worker;
       this.port = port;
 
-      port.onmessage = (event: MessageEvent<WorkerEvent>) => {
+      port.onmessage = (event: MessageEvent<unknown>) => {
         if (port !== this.port) return;
+        if (!isWorkerEvent(event.data)) {
+          this.setConnectionError('The market producer sent an invalid message.');
+          return;
+        }
         this.handleWorkerEvent(event.data);
       };
       port.onmessageerror = () => {

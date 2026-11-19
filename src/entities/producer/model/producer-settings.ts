@@ -26,8 +26,9 @@ export function validateProducerSettings(input: ProducerSettingsInput): Producer
   };
 }
 
-export function isProducerSettings(input: ProducerSettingsInput): input is ProducerSettings {
-  return Object.keys(validateProducerSettings(input)).length === 0;
+export function isProducerSettings(input: unknown): input is ProducerSettings {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return false;
+  return Object.keys(validateProducerSettings(input as ProducerSettingsInput)).length === 0;
 }
 
 function validateIntegerField(
